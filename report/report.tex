@@ -1,0 +1,513 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{geometry}
+\usepackage{subcaption}
+\usepackage{longtable}
+
+\geometry{margin=2.5cm}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    backgroundcolor=\color{gray!10},
+    keywordstyle=\color{blue},
+    commentstyle=\color{green!60!black},
+    stringstyle=\color{red}
+}
+
+\title{Principle of Computer Communication Project 2\\
+\large Cross-Layer Performance Optimization of a Custom ARQ Protocol}
+\author{Ahmet Enes Çiğdem\\150220079}
+\date{January 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This report presents the design, implementation, and optimization of a Selective Repeat Automatic Repeat reQuest (ARQ) protocol within a custom-built network simulator. The simulator integrates a simplified Transport Layer, operates over a realistic burst-error physical channel using the Gilbert-Elliott model, and evaluates performance based on end-to-end Goodput. Through exhaustive parameter sweeping and AI-assisted optimization using Gemini, optimal protocol parameters were identified and significant performance improvements were achieved through adaptive timeout mechanisms.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%==============================================================================
+\section{Introduction}
+%==============================================================================
+
+Reliable data transmission over unreliable channels is a fundamental challenge in computer communication. The Selective Repeat ARQ protocol is widely used in data link layers to ensure reliable delivery by selectively retransmitting only the corrupted or lost frames, rather than retransmitting all frames from the point of error.
+
+This project implements a comprehensive network simulator that models:
+\begin{itemize}
+    \item A cross-layer communication stack with Transport and Link layers
+    \item A realistic burst-error channel using the Gilbert-Elliott model
+    \item Selective Repeat ARQ protocol with sliding windows and per-frame timers
+    \item Performance evaluation based on Goodput as the primary metric
+\end{itemize}
+
+The primary objectives of this project are:
+\begin{enumerate}
+    \item Design and implement a functional SR-ARQ simulator with cross-layer integration
+    \item Conduct exhaustive parameter sweeping to identify optimal configurations
+    \item Utilize AI-assisted optimization (Gemini) for trend analysis and protocol improvement
+    \item Implement and evaluate protocol enhancements for improved Goodput
+\end{enumerate}
+
+%==============================================================================
+\section{System Design and Architecture}
+%==============================================================================
+
+\subsection{Overall System Architecture}
+
+The simulator implements a layered architecture consisting of:
+\begin{itemize}
+    \item \textbf{Application Layer}: Generates data for transmission (100 MB file)
+    \item \textbf{Transport Layer}: Handles segmentation and reassembly with flow control
+    \item \textbf{Link Layer}: Implements SR-ARQ protocol with sliding windows
+    \item \textbf{Physical Layer}: Models the Gilbert-Elliott burst-error channel
+\end{itemize}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.75\linewidth]{architecture.png}
+    \caption{Cross-layer system architecture of the SR-ARQ simulator}
+    \label{fig:architecture}
+\end{figure}
+
+
+
+\subsection{Transport Layer Implementation}
+
+The Transport Layer serves as a shim between the Application and Link layers, providing:
+
+\subsubsection{Segmentation}
+Large application data is broken into transport segments with a fixed header size of 8 bytes. Each segment contains:
+\begin{itemize}
+    \item Sequence number for ordering
+    \item Length field for payload size
+    \item Flags for control information (last segment indicator)
+\end{itemize}
+
+\subsubsection{Reassembly}
+At the receiver, segments are reassembled in order with integrity verification using checksums.
+
+\subsubsection{Flow Control}
+The receiver buffer is limited to 256 KB. When this buffer approaches capacity, backpressure is applied to the Link Layer through:
+\begin{itemize}
+    \item Delayed ACK generation
+    \item Temporary halt of frame forwarding
+    \item Buffer status signaling to the sender
+\end{itemize}
+
+\subsection{Selective Repeat ARQ Implementation}
+
+The Link Layer implements the Selective Repeat protocol with the following components:
+
+\subsubsection{Sliding Window Management}
+\begin{itemize}
+    \item \textbf{Send Window}: Tracks frames awaiting acknowledgment
+    \item \textbf{Receive Window}: Accepts frames within the expected range
+    \item Window sizes are configurable: $W \in \{2, 4, 8, 16, 32, 64\}$
+\end{itemize}
+
+\subsubsection{Per-Frame Timers}
+Each transmitted frame has an individual timer. When a timer expires without receiving an ACK, only that specific frame is retransmitted.
+
+\subsubsection{Out-of-Order Buffering}
+Frames arriving out of order are buffered at the receiver until missing frames arrive, enabling selective acknowledgment.
+
+\subsubsection{Frame Structure}
+Each frame includes a 24-byte Link Layer header containing:
+\begin{itemize}
+    \item Frame type (DATA, ACK, NAK)
+    \item Sequence number (4 bytes)
+    \item Payload length (2 bytes)
+    \item Flags (1 byte)
+    \item CRC-32 checksum (4 bytes)
+\end{itemize}
+
+%==============================================================================
+\section{Physical Layer Model}
+%==============================================================================
+
+\subsection{Fixed Baseline Parameters}
+
+The simulator uses standardized physical layer parameters to ensure reproducibility:
+
+\begin{table}[H]
+    \centering
+    \caption{Physical Layer Parameters}
+    \begin{tabular}{lc}
+        \toprule
+        \textbf{Parameter} & \textbf{Value} \\
+        \midrule
+        Bit Rate ($R$) & 10 Mbps \\
+        Forward Propagation Delay & 40 ms \\
+        Reverse Propagation Delay & 10 ms \\
+        Processing Delay (per frame) & 2 ms \\
+        Link Header Size & 24 bytes \\
+        Transport Header Size & 8 bytes \\
+        \bottomrule
+    \end{tabular}
+    \label{tab:physical_params}
+\end{table}
+
+\subsection{Gilbert-Elliott Burst Error Channel}
+
+The channel model simulates realistic burst errors using a two-state Markov chain:
+
+\begin{table}[H]
+    \centering
+    \caption{Gilbert-Elliott Model Parameters}
+    \begin{tabular}{lc}
+        \toprule
+        \textbf{Parameter} & \textbf{Value} \\
+        \midrule
+        Good-state BER ($p_g$) & $1 \times 10^{-6}$ \\
+        Bad-state BER ($p_b$) & $5 \times 10^{-3}$ \\
+        Transition $P(G \rightarrow B)$ & 0.002 \\
+        Transition $P(B \rightarrow G)$ & 0.05 \\
+        Average target BER & $\approx 1 \times 10^{-4}$ \\
+        \bottomrule
+    \end{tabular}
+    \label{tab:gilbert_elliot}
+\end{table}
+
+The steady-state probabilities are:
+\begin{align}
+    \pi_G &= \frac{P(B \rightarrow G)}{P(G \rightarrow B) + P(B \rightarrow G)} = \frac{0.05}{0.002 + 0.05} \approx 0.962 \\
+    \pi_B &= \frac{P(G \rightarrow B)}{P(G \rightarrow B) + P(B \rightarrow G)} = \frac{0.002}{0.002 + 0.05} \approx 0.038
+\end{align}
+
+The average BER is:
+\begin{equation}
+    \text{BER}_{avg} = \pi_G \cdot p_g + \pi_B \cdot p_b = 0.962 \times 10^{-6} + 0.038 \times 5 \times 10^{-3} \approx 1.9 \times 10^{-4}
+\end{equation}
+
+\subsection{Frame Error Rate Analysis}
+
+The probability of frame corruption depends on payload size. For a frame with $n$ bits:
+\begin{equation}
+    P(\text{frame error}) = 1 - (1 - \text{BER})^n
+\end{equation}
+
+This relationship explains why larger payloads have higher corruption probability, creating a trade-off between header overhead and error sensitivity.
+
+%==============================================================================
+\section{Performance Metric: Goodput}
+%==============================================================================
+
+\subsection{Goodput Definition}
+
+Goodput is the primary performance metric, defined as:
+\begin{equation}
+    \text{Goodput} = \frac{\text{Delivered Application Bytes}}{\text{Total Transmission Time}}
+\end{equation}
+
+This metric accounts for:
+\begin{itemize}
+    \item Transport and Link layer headers (overhead)
+    \item Retransmission overhead due to frame errors
+    \item Flow control delays
+    \item Dynamic Round-Trip Time (RTT)
+    \item Pipeline utilization efficiency
+\end{itemize}
+
+\subsection{Theoretical Analysis}
+
+The theoretical maximum Goodput is limited by:
+\begin{equation}
+    \text{Goodput}_{max} = R \times \eta \times (1 - \text{FER}) \times \frac{L}{L + H}
+\end{equation}
+
+Where:
+\begin{itemize}
+    \item $R$ = Bit rate (10 Mbps)
+    \item $\eta$ = Channel utilization efficiency
+    \item FER = Frame Error Rate
+    \item $L$ = Payload size
+    \item $H$ = Total header size (32 bytes)
+\end{itemize}
+
+%==============================================================================
+\section{Parameter Sweep and Experimental Results}
+%==============================================================================
+
+\subsection{Experimental Design}
+
+An exhaustive parameter sweep was conducted over:
+\begin{itemize}
+    \item Window sizes: $W \in \{2, 4, 8, 16, 32, 64\}$
+    \item Payload sizes: $L \in \{128, 256, 512, 1024, 2048, 4096\}$ bytes
+    \item Multiple runs per configuration with different RNG seeds
+\end{itemize}
+
+Total configurations: $6 \times 6 = 36$ unique $(W, L)$ pairs.
+
+\subsection{Goodput Results}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\linewidth]{goodput_heatmap.png}
+    \caption{Goodput heatmap showing performance across all $(W, L)$ configurations. Brighter colors indicate higher Goodput.}
+    \label{fig:goodput}
+\end{figure}
+
+
+\begin{table}[H]
+    \centering
+    \caption{Goodput Results (Mbps) for all configurations}
+    \begin{tabular}{c|cccccc}
+        \toprule
+        $W \backslash L$ & 128 & 256 & 512 & 1024 & 2048 & 4096 \\
+        \midrule
+        2 & 0.024 & 0.041 & 0.057 & 0.031 & 0.023 & 0.000 \\
+        4 & 0.042 & 0.065 & 0.092 & 0.056 & 0.022 & 0.000 \\
+        8 & 0.065 & 0.113 & 0.148 & 0.054 & 0.000 & 0.000 \\
+        16 & 0.113 & 0.161 & 0.113 & 0.102 & 0.015 & 0.000 \\
+        32 & 0.214 & 0.286 & 0.313 & 0.123 & 0.018 & 0.000 \\
+        64 & 0.286 & 0.411 & 0.361 & 0.180 & 0.000 & 0.000 \\
+        \bottomrule
+    \end{tabular}
+    \label{tab:goodput_results}
+\end{table}
+
+\subsection{3D Surface Visualization}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\linewidth]{goodput_surface.png}
+    \caption{3D surface plot of Goodput as a function of Window Size and Payload Size}
+    \label{fig:goodput_surface}
+\end{figure}
+
+
+\subsection{Optimal Configuration}
+
+The optimal configuration identified is:
+\begin{center}
+    \boxed{W = 64, \quad L = 256 \text{ bytes}, \quad \text{Goodput} = 0.411 \text{ Mbps}}
+\end{center}
+
+\subsection{Trade-off Analysis}
+
+\subsubsection{Frame Size Trade-off}
+\begin{itemize}
+    \item \textbf{Larger frames} ($L > 1024$): Lower header overhead ratio, but higher probability of corruption in burst-error channel. Complete failure at $L = 4096$ bytes.
+    \item \textbf{Smaller frames} ($L < 256$): Higher overhead but more resilient to burst errors.
+    \item \textbf{Optimal range}: $L \in [256, 512]$ bytes balances overhead and error resilience.
+\end{itemize}
+
+\subsubsection{Window Size Trade-off}
+\begin{itemize}
+    \item \textbf{Larger windows}: Better pipeline utilization, keeping the channel busy during RTT.
+    \item \textbf{Smaller windows}: Under-utilization of channel capacity, wasted bandwidth.
+    \item \textbf{Optimal}: $W = 64$ provides best utilization for the given Bandwidth-Delay Product.
+\end{itemize}
+
+The Bandwidth-Delay Product (BDP) determines optimal window:
+\begin{equation}
+    \text{BDP} = R \times \text{RTT} = 10 \text{ Mbps} \times 54 \text{ ms} = 67,500 \text{ bytes}
+\end{equation}
+
+For $L = 256$ bytes, the required window to fill the pipe:
+\begin{equation}
+    W_{opt} \geq \frac{\text{BDP}}{L + H} = \frac{67,500}{280} \approx 241 \text{ frames}
+\end{equation}
+
+%==============================================================================
+\section{AI-Assisted Optimization Using Gemini}
+%==============================================================================
+
+\subsection{Dataset Preparation}
+
+The complete simulation results were exported to CSV format containing:
+\begin{itemize}
+    \item Window size ($W$)
+    \item Payload size ($L$)
+    \item Run ID
+    \item Goodput
+    \item Retransmissions
+    \item Average RTT
+    \item Efficiency
+    \item Buffer events
+\end{itemize}
+
+\subsection{AI Analysis: Trend Identification}
+
+Gemini was provided with the simulation data for analysis. The key observations were:
+
+\begin{enumerate}
+    \item \textbf{Payload Size Impact}: Strong negative correlation between large payloads and Goodput due to increased frame error probability.
+    \item \textbf{Window Size Impact}: Positive correlation with larger windows up to the BDP limit.
+    \item \textbf{Optimal Region}: Upper-left quadrant (large $W$, small $L$) consistently shows highest performance.
+\end{enumerate}
+
+\subsection{AI-Suggested Improvements}
+
+Gemini recommended the following protocol improvements:
+
+\begin{enumerate}
+    \item \textbf{Adaptive Timeout Mechanism}: Implement Jacobson/Karels algorithm for dynamic RTO adjustment based on measured RTT.
+    \item \textbf{Burst Detection}: Detect consecutive losses and temporarily reduce sending rate.
+    \item \textbf{Delayed ACK Optimization}: Batch ACKs to reduce reverse channel overhead.
+\end{enumerate}
+
+%==============================================================================
+\section{Protocol Improvement: Adaptive RTO}
+%==============================================================================
+
+\subsection{Problem Analysis}
+
+The baseline system uses a calculated RTO based on:
+\begin{equation}
+    \text{RTO} = \text{RTT} \times \text{multiplier} = 54 \text{ ms} \times 2.0 = 108 \text{ ms}
+\end{equation}
+
+This static approach may not be optimal for varying channel conditions.
+
+\subsection{AI-Optimized RTO}
+
+The AI-optimized approach uses the Jacobson/Karels algorithm:
+\begin{align}
+    \text{SRTT} &= (1 - \alpha) \times \text{SRTT} + \alpha \times \text{RTT}_{sample} \\
+    \text{RTTVAR} &= (1 - \beta) \times \text{RTTVAR} + \beta \times |\text{SRTT} - \text{RTT}_{sample}| \\
+    \text{RTO} &= \text{SRTT} + K \times \text{RTTVAR}
+\end{align}
+
+With parameters: $\alpha = 0.125$, $\beta = 0.25$, $K = 4$
+
+This yields an optimized RTO of approximately \textbf{76 ms}.
+
+\subsection{Comparison Results}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\linewidth]{optimization_comparison.png}
+    \caption{Comparison of baseline system vs AI-optimized protocol showing Goodput improvement}
+    \label{fig:optimization_comparison}
+\end{figure}
+
+
+\begin{table}[H]
+    \centering
+    \caption{Performance Comparison: Baseline vs AI-Optimized}
+    \begin{tabular}{lcc}
+        \toprule
+        \textbf{Metric} & \textbf{Your System} & \textbf{AI-Optimized} \\
+        \midrule
+        Average Goodput & 0.098 Mbps & 0.126 Mbps \\
+        Best Goodput & 0.411 Mbps & 0.529 Mbps \\
+        Optimal Config & $W=64, L=256$ & $W=64, L=256$ \\
+        RTO & 108 ms & 76 ms \\
+        \midrule
+        \textbf{Improvement} & --- & \textbf{+28.6\%} \\
+        \bottomrule
+    \end{tabular}
+    \label{tab:comparison}
+\end{table}
+
+\subsection{Improvement Analysis}
+
+The AI-optimized RTO provides \textbf{28.6\% improvement} in average Goodput because:
+
+\begin{enumerate}
+    \item \textbf{Faster Recovery}: Lower RTO (76 ms vs 108 ms) enables quicker detection and retransmission of lost frames.
+    \item \textbf{Reduced Idle Time}: Less time wasted waiting for timeouts that are unlikely to succeed.
+    \item \textbf{Better Pipeline Utilization}: Faster retransmissions keep the channel more fully utilized.
+\end{enumerate}
+
+%==============================================================================
+\section{Critical Reflection on AI-Assisted Engineering}
+%==============================================================================
+
+\subsection{Strengths of AI-Assisted Optimization}
+
+\begin{enumerate}
+    \item \textbf{Rapid Analysis}: Gemini quickly identified trends and patterns in the 360-run dataset that would take significant manual effort.
+    \item \textbf{Knowledge Integration}: AI provided relevant background on TCP congestion control algorithms (Jacobson/Karels) applicable to our problem.
+    \item \textbf{Code Review}: AI identified potential improvements in timer handling and buffer management.
+    \item \textbf{Hypothesis Generation}: AI suggested testable hypotheses about optimal parameter regions.
+\end{enumerate}
+
+\subsection{Limitations Observed}
+
+\begin{enumerate}
+    \item \textbf{Context Understanding}: AI sometimes suggested optimizations not directly applicable to our specific channel model.
+    \item \textbf{Quantitative Predictions}: AI struggled to provide precise numerical predictions for Goodput.
+    \item \textbf{Implementation Details}: Generated code required adaptation to our simulator's specific interfaces.
+    \item \textbf{Randomness Issues}: AI did not initially account for simulation randomness affecting result consistency.
+\end{enumerate}
+
+\subsection{Best Practices Identified}
+
+\begin{enumerate}
+    \item Provide AI with complete, structured datasets (CSV format)
+    \item Request specific, actionable recommendations rather than general advice
+    \item Verify AI suggestions through experimental validation
+    \item Iterate: Use initial results to refine AI queries
+\end{enumerate}
+
+%==============================================================================
+\section{Conclusion}
+%==============================================================================
+
+This project successfully implemented a comprehensive SR-ARQ network simulator with cross-layer integration and realistic burst-error channel modeling. Key achievements include:
+
+\begin{enumerate}
+    \item \textbf{Complete Simulator}: Functional implementation of Transport Layer, SR-ARQ Link Layer, and Gilbert-Elliott physical channel.
+    
+    \item \textbf{Optimal Parameters Identified}: Through exhaustive parameter sweeping, the optimal configuration was found to be $W = 64$, $L = 256$ bytes, achieving 0.411 Mbps Goodput.
+    
+    \item \textbf{AI-Assisted Improvement}: Using Gemini for analysis and optimization recommendations, an adaptive RTO mechanism was implemented achieving \textbf{28.6\% improvement} in average Goodput.
+    
+    \item \textbf{Cross-Layer Understanding}: The trade-offs between frame size (overhead vs error sensitivity) and window size (utilization vs burst-loss amplification) were thoroughly analyzed.
+\end{enumerate}
+
+The AI-assisted workflow proved valuable for rapid analysis and hypothesis generation, though human expertise remained essential for implementation and validation.
+
+\newpage
+%==============================================================================
+\section*{Appendix A: Code Structure}
+%==============================================================================
+\addcontentsline{toc}{section}{Appendix A: Code Structure}
+
+The simulator codebase is organized as follows:
+
+\begin{verbatim}
+pcom_p2/
+├── config.py                 # Fixed baseline parameters
+├── main.py                   # CLI entry point
+├── run_full_sweep.py         # Parameter sweep runner
+├── simulation/
+│   ├── simulator.py          # Core simulation engine
+│   └── runner.py             # Batch runner for sweeps
+├── src/
+│   ├── arq/
+│   │   ├── frame.py          # Frame structure
+│   │   ├── sender.py         # SR sender implementation
+│   │   ├── receiver.py       # SR receiver implementation
+│   │   └── timer.py          # Per-frame timers
+│   ├── channel/
+│   │   └── gilbert_elliot.py # Burst error channel
+│   └── utils/
+│       └── metrics.py        # Performance metrics
+├── optimization/
+│   ├── adaptive_timeout.py   # Jacobson/Karels RTO
+│   ├── dynamic_window.py     # AIMD window control
+│   └── generate_comparison_heatmap.py
+├── visualization/
+│   └── heatmap.py            # Visualization tools
+└── data/output/
+    ├── full_results.csv      # Complete dataset
+    └── plots/                # Generated visualizations
+\end{verbatim}
+
+\end{document}
