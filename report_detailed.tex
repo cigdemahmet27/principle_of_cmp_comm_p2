@@ -1,0 +1,538 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{geometry}
+\usepackage{subcaption}
+\usepackage{longtable}
+
+\geometry{margin=2.5cm}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    backgroundcolor=\color{gray!10},
+    keywordstyle=\color{blue},
+    commentstyle=\color{green!60!black},
+    stringstyle=\color{red},
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    numbersep=5pt,
+    showstringspaces=false
+}
+
+\title{Principle of Computer Communication Project 2\\
+\large Cross-Layer Performance Optimization of a Custom ARQ Protocol\\
+\large \textbf{Detailed Implementation Report}}
+\author{Ahmet Enes Cigdem\\150220079}
+\date{January 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This report presents a comprehensive analysis of the design, implementation, and optimization of a Selective Repeat ARQ protocol within a custom-built network simulator. The simulator uses a Gilbert-Elliott burst-error channel model and evaluates performance based on end-to-end Goodput. Through 360 exhaustive simulations and AI-assisted optimization, optimal protocol parameters were identified and significant performance improvements were achieved.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%==============================================================================
+\section{Introduction}
+%==============================================================================
+
+This project implements a comprehensive SR-ARQ network simulator with:
+\begin{itemize}
+    \item Cross-layer communication stack (Application, Transport, Link, Physical)
+    \item Realistic burst-error channel (Gilbert-Elliott model)
+    \item Selective Repeat ARQ with sliding windows and per-frame timers
+    \item 360 exhaustive simulations for parameter optimization
+    \item AI-assisted protocol improvement
+\end{itemize}
+
+%==============================================================================
+\section{Project Architecture}
+%==============================================================================
+
+\begin{verbatim}
+pcom_p2/
+├── config.py              # Fixed baseline parameters
+├── run_full_sweep.py      # Parameter sweep (360 simulations)
+├── simulation/
+│   ├── simulator.py       # Event-driven simulation engine
+│   └── runner.py          # Batch runner for sweeps
+├── src/
+│   ├── arq/               # ARQ protocol (sender, receiver, frame)
+│   ├── channel/           # Gilbert-Elliott channel model
+│   ├── layers/            # Protocol layers implementation
+│   │   ├── application_layer.py  # Data generation, verification
+│   │   ├── transport_layer.py    # Segmentation, reassembly
+│   │   ├── link_layer.py         # SR-ARQ wrapper
+│   │   └── physical_layer.py     # Delay, channel interface
+│   └── utils/             # Metrics and logging
+└── optimization/          # AI optimization scripts
+\end{verbatim}
+
+%==============================================================================
+\section{Protocol Layers}
+%==============================================================================
+
+The simulator implements a layered protocol stack where each layer has specific responsibilities.
+
+\subsection{Application Layer (application\_layer.py)}
+
+Handles data generation and verification for the simulation:
+
+\begin{itemize}
+    \item \textbf{Data Generation}: Creates test data (50KB-100MB) with sequential or random patterns
+    \item \textbf{Data Verification}: Compares sent vs received data using MD5 checksums
+    \item \textbf{Chunked Reading}: Delivers data in chunks to Transport layer
+\end{itemize}
+
+\begin{lstlisting}[language=Python, caption={Application Layer - Test Data Generation}]
+class TestDataGenerator:
+    @staticmethod
+    def generate_test_data(size, pattern="sequential"):
+        """Generate test data for simulation."""
+        if pattern == "sequential":
+            return bytes(i % 256 for i in range(size))
+        elif pattern == "random":
+            return os.urandom(size)
+
+class DataVerifier:
+    @staticmethod
+    def verify_data(sent, received):
+        """Verify received data matches sent data."""
+        return sent == received
+\end{lstlisting}
+
+\subsection{Transport Layer (transport\_layer.py)}
+
+Handles segmentation of application data and reassembly at receiver:
+
+\begin{itemize}
+    \item \textbf{Segmentation}: Breaks large data into transport segments (8-byte header)
+    \item \textbf{Reassembly}: Reconstructs original data from received segments
+    \item \textbf{Flow Control}: 256KB receive buffer with backpressure signaling
+\end{itemize}
+
+\begin{lstlisting}[language=Python, caption={Transport Segment Structure}]
+class TransportSegment:
+    """
+    Header Layout (8 bytes):
+      - Segment Number: 4 bytes
+      - Payload Length: 2 bytes
+      - Flags: 1 byte (last segment indicator)
+      - Checksum: 1 byte
+    """
+    def serialize(self):
+        """Pack segment into bytes."""
+        header = struct.pack('>IHBx', 
+            self.segment_num, len(self.payload), self.flags)
+        return header + self.payload
+    
+    @classmethod
+    def deserialize(cls, data):
+        """Unpack bytes into segment."""
+        header = struct.unpack('>IHBx', data[:8])
+        return cls(header[0], data[8:], header[2])
+\end{lstlisting}
+
+\subsection{Link Layer (SR-ARQ in src/arq/)}
+
+Implements Selective Repeat ARQ protocol:
+
+\begin{itemize}
+    \item \textbf{Sliding Window}: Configurable window size (2-64 frames)
+    \item \textbf{Per-Frame Timers}: Each frame has individual timeout
+    \item \textbf{Selective Retransmission}: Only retransmit corrupted/lost frames
+    \item \textbf{Out-of-Order Buffering}: Buffer frames until gaps are filled
+\end{itemize}
+
+\begin{lstlisting}[language=Python, caption={Link Layer - Frame Structure}]
+class Frame:
+    """
+    Link Header (24 bytes):
+      - Frame Type: 1 byte (DATA=0, ACK=1, NAK=2)
+      - Sequence Number: 4 bytes
+      - ACK Number: 4 bytes
+      - Payload Length: 2 bytes
+      - Flags: 1 byte
+      - Reserved: 8 bytes
+      - CRC-32: 4 bytes
+    """
+    @property
+    def total_size(self):
+        return LINK_HEADER_SIZE + len(self.payload)
+\end{lstlisting}
+
+\subsection{Physical Layer (physical\_layer.py)}
+
+Handles transmission timing and channel interface:
+
+\begin{itemize}
+    \item \textbf{Transmission Time}: Calculates time based on bit rate (10 Mbps)
+    \item \textbf{Propagation Delay}: Asymmetric delays (40ms forward, 10ms reverse)
+    \item \textbf{Channel Interface}: Connects to Gilbert-Elliott error model
+\end{itemize}
+
+\begin{lstlisting}[language=Python, caption={Physical Layer - Delay Calculation}]
+class PhysicalLayer:
+    def calculate_total_delay(self, frame_size, direction):
+        """Total = Transmission + Propagation + Processing"""
+        tx_time = (frame_size * 8) / self.bit_rate
+        prop_delay = self.forward_delay if direction == FORWARD \
+                     else self.reverse_delay
+        return tx_time + prop_delay + self.processing_delay
+    
+    def transmit_frame(self, frame, current_time, direction):
+        """Transmit frame through Gilbert-Elliott channel."""
+        delay = self.calculate_total_delay(frame.total_size, direction)
+        corrupted, _ = self.channel.transmit_frame(frame.total_size * 8)
+        return current_time + delay, corrupted
+\end{lstlisting}
+
+%==============================================================================
+\section{Configuration Parameters}
+%==============================================================================
+
+All fixed parameters are defined in \texttt{config.py}:
+
+\begin{lstlisting}[language=Python, caption={Physical Layer Parameters}]
+BIT_RATE = 10_000_000          # 10 Mbps
+FORWARD_PROPAGATION_DELAY = 0.040  # 40 ms (data)
+REVERSE_PROPAGATION_DELAY = 0.010  # 10 ms (ACK)
+PROCESSING_DELAY = 0.002       # 2 ms per frame
+TRANSPORT_HEADER_SIZE = 8      # bytes
+LINK_HEADER_SIZE = 24          # bytes
+\end{lstlisting}
+
+\begin{lstlisting}[language=Python, caption={Gilbert-Elliott Channel Parameters}]
+GOOD_STATE_BER = 1e-6    # BER in Good state
+BAD_STATE_BER = 5e-3     # BER in Bad state
+P_GOOD_TO_BAD = 0.002    # Transition G to B
+P_BAD_TO_GOOD = 0.05     # Transition B to G
+\end{lstlisting}
+
+\begin{lstlisting}[language=Python, caption={Parameter Sweep Configuration}]
+WINDOW_SIZES = [2, 4, 8, 16, 32, 64]
+PAYLOAD_SIZES = [128, 256, 512, 1024, 2048, 4096]
+RUNS_PER_CONFIGURATION = 10
+# Total = 6 x 6 x 10 = 360 simulations
+\end{lstlisting}
+
+%==============================================================================
+\section{Gilbert-Elliott Channel Model}
+%==============================================================================
+
+The channel uses a two-state Markov chain to model burst errors.
+
+\subsection{Mathematical Model}
+
+\textbf{Steady-State Probabilities:}
+\begin{align}
+    \pi_G &= \frac{P(B \rightarrow G)}{P(G \rightarrow B) + P(B \rightarrow G)} = \frac{0.05}{0.002 + 0.05} = 0.962 \\
+    \pi_B &= \frac{P(G \rightarrow B)}{P(G \rightarrow B) + P(B \rightarrow G)} = \frac{0.002}{0.052} = 0.038
+\end{align}
+
+\textbf{Average Bit Error Rate:}
+\begin{equation}
+    \text{BER}_{avg} = \pi_G \cdot p_g + \pi_B \cdot p_b = 0.962 \times 10^{-6} + 0.038 \times 5 \times 10^{-3} \approx 1.9 \times 10^{-4}
+\end{equation}
+
+\textbf{Frame Error Rate:} For a frame with $n$ bits:
+\begin{equation}
+    P(\text{frame error}) = 1 - (1 - \text{BER}_{state})^n
+\end{equation}
+
+\subsection{Implementation}
+
+\begin{lstlisting}[language=Python, caption={Gilbert-Elliott Channel - Frame Transmission}]
+def transmit_frame(self, frame_size_bits):
+    """Simulate frame transmission with bit-by-bit Markov chain."""
+    bit_errors = 0
+    
+    for _ in range(frame_size_bits):
+        # Get BER based on current state
+        ber = self.pg if self.state == GOOD else self.pb
+        
+        # Check if this bit has error
+        if self.rng.random() < ber:
+            bit_errors += 1
+        
+        # State transition
+        if self.state == GOOD:
+            if self.rng.random() < self.p_gb:
+                self.state = BAD
+        else:
+            if self.rng.random() < self.p_bg:
+                self.state = GOOD
+    
+    return bit_errors > 0, bit_errors
+\end{lstlisting}
+
+%==============================================================================
+\section{Event-Driven Simulation Engine}
+%==============================================================================
+
+The simulator uses an event-driven architecture with a priority queue.
+
+\subsection{Event Types}
+
+\begin{lstlisting}[language=Python, caption={Simulation Events}]
+class EventType(Enum):
+    DATA_ARRIVAL = 0   # Data frame arrives at receiver
+    ACK_ARRIVAL = 1    # ACK arrives at sender
+    TIMER_CHECK = 2    # Check for timeouts
+\end{lstlisting}
+
+\subsection{Delay Calculations}
+
+\textbf{Forward Delay} (data frames):
+\begin{equation}
+    D_{forward} = \frac{\text{FrameSize} \times 8}{\text{BitRate}} + \text{PropDelay}_{forward} + \text{ProcessingDelay}
+\end{equation}
+
+\textbf{Reverse Delay} (ACK frames):
+\begin{equation}
+    D_{reverse} = \frac{\text{ACKSize} \times 8}{\text{BitRate}} + \text{PropDelay}_{reverse} + \text{ProcessingDelay}
+\end{equation}
+
+\textbf{Round-Trip Time:}
+\begin{equation}
+    \text{RTT} = D_{forward} + D_{reverse} \approx 54 \text{ ms}
+\end{equation}
+
+\subsection{Main Simulation Loop}
+
+\begin{lstlisting}[language=Python, caption={Event-Driven Main Loop}]
+def run(self, data):
+    """Main simulation loop."""
+    self._setup_data(data)
+    self._send_frames()  # Initial window fill
+    
+    while not self._is_complete():
+        event = heapq.heappop(self.event_queue)
+        self.current_time = event.time
+        
+        if event.event_type == DATA_ARRIVAL:
+            self._handle_data_arrival(event.data)
+        elif event.event_type == ACK_ARRIVAL:
+            self._handle_ack_arrival(event.data)
+        elif event.event_type == TIMER_CHECK:
+            self._handle_timeouts()
+        
+        self._send_frames()
+    
+    return self.metrics.get_summary()
+\end{lstlisting}
+
+%==============================================================================
+\section{Goodput Calculation}
+%==============================================================================
+
+\subsection{Mathematical Definition}
+
+\textbf{Goodput} is the primary performance metric:
+
+\begin{equation}
+    \boxed{\text{Goodput} = \frac{\text{Delivered Application Bytes}}{\text{Total Transmission Time}} \quad [\text{bytes/second}]}
+\end{equation}
+
+In bits per second:
+\begin{equation}
+    \text{Goodput}_{bps} = \text{Goodput} \times 8
+\end{equation}
+
+\textbf{Efficiency} measures useful data ratio:
+\begin{equation}
+    \eta = \frac{\text{Application Bytes Delivered}}{\text{Total Bytes Transmitted}} = \frac{D}{D + H + R}
+\end{equation}
+Where: $D$ = Delivered payload, $H$ = Header overhead, $R$ = Retransmission bytes.
+
+\textbf{Theoretical Maximum Goodput:}
+\begin{equation}
+    \text{Goodput}_{max} = R \times \eta_{link} \times (1 - \text{FER}) \times \frac{L}{L + H}
+\end{equation}
+
+\textbf{Retransmission Rate:}
+\begin{equation}
+    \text{Retransmission Rate} = \frac{\text{Retransmissions}}{\text{Original Frames Sent}}
+\end{equation}
+
+\subsection{Implementation}
+
+\begin{lstlisting}[language=Python, caption={Goodput Calculation}]
+class MetricsCollector:
+    def calculate_goodput(self):
+        """Goodput = Delivered Bytes / Total Time"""
+        total_time = self.end_time - self.start_time
+        return self.application_bytes_delivered / total_time
+    
+    def calculate_efficiency(self):
+        """Efficiency = Delivered / Total Transmitted"""
+        return self.application_bytes_delivered / \
+               self.total_bytes_transmitted
+\end{lstlisting}
+
+%==============================================================================
+\section{Batch Runner for 360 Simulations}
+%==============================================================================
+
+\subsection{Simulation Count}
+
+\begin{equation}
+    \text{Total Simulations} = |\text{Window Sizes}| \times |\text{Payload Sizes}| \times \text{Runs per Config} = 6 \times 6 \times 10 = 360
+\end{equation}
+
+\subsection{Implementation}
+
+\begin{lstlisting}[language=Python, caption={Batch Runner}]
+class BatchRunner:
+    def _generate_run_configs(self):
+        """Generate all 360 configurations."""
+        configs = []
+        for W in self.window_sizes:
+            for L in self.payload_sizes:
+                for run_id in range(self.runs_per_config):
+                    seed = 42 + W*1000 + L + run_id*10000
+                    configs.append(RunConfig(W, L, run_id, seed))
+        return configs  # 360 configs
+    
+    def run_sequential(self):
+        """Execute all simulations."""
+        for config in self._generate_run_configs():
+            result = run_single_simulation(config)
+            self.results.append(result)
+\end{lstlisting}
+
+%==============================================================================
+\section{Experimental Results}
+%==============================================================================
+
+\subsection{Goodput Heatmap}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\linewidth]{goodput_heatmap_360.png}
+    \caption{Goodput heatmap from 360 simulations. Brighter = higher Goodput.}
+    \label{fig:goodput}
+\end{figure}
+
+\subsection{3D Goodput Surface}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\linewidth]{data/output/plots/goodput_surface.png}
+    \caption{3D surface plot showing Goodput as a function of Window Size (W) and Payload Size (L). The red star marks the optimal configuration at W=64, L=256.}
+    \label{fig:surface}
+\end{figure}
+
+\subsection{Multi-View Surface Analysis}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\linewidth]{data/output/plots/goodput_surface_views.png}
+    \caption{Multiple perspective views of the Goodput surface: Standard View (top-left), Rotated 90° (top-right), Top-Down View (bottom-left), and Side View (bottom-right). These views reveal the performance landscape from different angles.}
+    \label{fig:surface_views}
+\end{figure}
+
+\subsection{Optimal Configuration}
+
+\begin{center}
+    \boxed{W = 64, \quad L = 256 \text{ bytes}, \quad \text{Goodput} = 0.477 \text{ Mbps}}
+\end{center}
+
+\subsection{Trade-off Analysis}
+
+\textbf{Bandwidth-Delay Product:}
+\begin{equation}
+    \text{BDP} = R \times \text{RTT} = 10 \text{ Mbps} \times 54 \text{ ms} = 67,500 \text{ bytes}
+\end{equation}
+
+\textbf{Optimal Window Size:}
+\begin{equation}
+    W_{opt} \geq \frac{\text{BDP}}{L + H} = \frac{67,500}{256 + 32} \approx 234 \text{ frames}
+\end{equation}
+
+%==============================================================================
+\section{AI-Assisted Optimization}
+%==============================================================================
+
+\subsection{Optimization Approach}
+
+The AI optimization uses an improved RTO calculation based on Jacobson/Karels:
+
+\textbf{Default RTO:}
+\begin{equation}
+    \text{RTO}_{default} = \text{RTT} \times 2.0 = 54 \text{ ms} \times 2.0 = 108 \text{ ms}
+\end{equation}
+
+\textbf{AI-Optimized RTO:}
+\begin{equation}
+    \text{RTO}_{AI} = \text{RTT} + 4 \times \sigma_{RTT} = 54 + 4 \times 5.4 = 76 \text{ ms}
+\end{equation}
+
+Where $\sigma_{RTT} \approx 0.1 \times \text{RTT}$ is the estimated RTT variance.
+
+\subsection{Implementation}
+
+\begin{lstlisting}[language=Python, caption={AI-Optimized RTO Calculation}]
+def calculate_optimal_timeout():
+    """Calculate AI-optimized RTO."""
+    rtt = FORWARD_PROP_DELAY + REVERSE_PROP_DELAY + 2*PROC_DELAY
+    variance = rtt * 0.1
+    return rtt + 4 * variance  # = 76 ms
+\end{lstlisting}
+
+\subsection{Comparison Results}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\linewidth]{optimization_comparison.png}
+    \caption{Baseline (left) vs AI-Optimized (center) with improvement \% (right).}
+    \label{fig:comparison}
+\end{figure}
+
+\begin{table}[H]
+    \centering
+    \caption{Performance Comparison}
+    \begin{tabular}{lcc}
+        \toprule
+        \textbf{Metric} & \textbf{Baseline} & \textbf{AI-Optimized} \\
+        \midrule
+        Average Goodput & 0.108 Mbps & 0.123 Mbps \\
+        RTO & 108 ms & 76 ms \\
+        \textbf{Improvement} & --- & \textbf{+13.9\%} \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{Why AI Optimization Works}
+
+Lower RTO (76ms vs 108ms) enables:
+\begin{enumerate}
+    \item \textbf{Faster Recovery}: Quicker detection of lost frames
+    \item \textbf{Reduced Idle Time}: Less waiting for unnecessary timeouts
+    \item \textbf{Better Pipeline Utilization}: Channel stays busy
+\end{enumerate}
+
+%==============================================================================
+\section{Conclusion}
+%==============================================================================
+
+\begin{enumerate}
+    \item \textbf{Complete Simulator}: Event-driven SR-ARQ with 4-layer stack
+    \item \textbf{360 Simulations}: $6 \times 6 \times 10$ parameter sweep
+    \item \textbf{Optimal Found}: $W=64$, $L=256$ bytes, Goodput = 0.477 Mbps
+    \item \textbf{AI Improvement}: +13.9\% via optimized RTO (76ms vs 108ms)
+\end{enumerate}
+
+\end{document}

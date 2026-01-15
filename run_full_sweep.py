@@ -10,7 +10,7 @@ import os
 runner = BatchRunner(
     window_sizes=[2, 4, 8, 16, 32, 64],
     payload_sizes=[128, 256, 512, 1024, 2048, 4096],
-    runs_per_config=2,  # 2 runs per config for speed
+    runs_per_config=10,  # 10 runs per config for full 360 simulations
     data_size=50 * 1024,  # 50 KB for faster test
     output_file='data/output/full_results.csv'
 )

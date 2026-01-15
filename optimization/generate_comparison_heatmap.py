@@ -167,7 +167,7 @@ def main():
     window_sizes = [2, 4, 8, 16, 32, 64]
     payload_sizes = [128, 256, 512, 1024, 2048, 4096]
     data_size = 50 * 1024  # 50 KB (same as run_full_sweep.py)
-    runs_per_config = 2
+    runs_per_config = 10  # 10 runs per config for full 360 simulations
     
     # CSV file from run_full_sweep.py
     baseline_csv = 'data/output/full_results.csv'
